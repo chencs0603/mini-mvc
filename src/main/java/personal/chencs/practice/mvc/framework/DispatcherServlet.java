@@ -40,19 +40,24 @@ public class DispatcherServlet extends HttpServlet {
 
     }
 
+    /**
+     * 加载配置文件
+     *
+     * @param configLocation 配置文件路径
+     */
     private void loadConfigFile(String configLocation) {
-        // 把web.xml中的contextConfigLocation对应value值的文件加载到留里面
-        InputStream resourceAsStream = this.getClass().getClassLoader().getResourceAsStream(configLocation);
+        // 把web.xml中configLocation对应的文件加载进来，ClassLoader是从根路径上搜索文件
+        InputStream inputStream = this.getClass().getClassLoader().getResourceAsStream(configLocation);
         try {
-            //用Properties文件加载文件里的内容
-            properties.load(resourceAsStream);
+            // 用Properties加载文件里的内容
+            properties.load(inputStream);
         } catch (IOException e) {
             e.printStackTrace();
         } finally {
-            //关流
-            if (null != resourceAsStream) {
+            // 关流
+            if (null != inputStream) {
                 try {
-                    resourceAsStream.close();
+                    inputStream.close();
                 } catch (IOException e) {
                     e.printStackTrace();
                 }
@@ -60,28 +65,41 @@ public class DispatcherServlet extends HttpServlet {
         }
     }
 
+    /**
+     * 扫描指定包名下的所有的类，将全类名加入classNames
+     *
+     * @param packageName 包名
+     */
     private void scanPackage(String packageName) {
-        //把所有的.替换成/
-        URL url = this.getClass().getClassLoader().getResource("/" + packageName.replaceAll("\\.", "/"));
+        // 把所有的.替换成/
+        String packagePath = "/" + packageName.replaceAll("\\.", "/");
+        URL url = this.getClass().getClassLoader().getResource(packagePath);
+        // 遍历指定文件夹的所有文件
         File dir = new File(url.getFile());
         for (File file : dir.listFiles()) {
             if (file.isDirectory()) {
-                //递归读取包
+                // 递归读取包
                 scanPackage(packageName + "." + file.getName());
             } else {
+                // 将全类名加入classNames
                 String className = packageName + "." + file.getName().replace(".class", "");
                 classNames.add(className);
             }
         }
     }
 
+    /**
+     * 把classNames中加上注解的类实例化
+     */
     private void newInstance() {
+        // classNames为空
         if (classNames.isEmpty()) {
             return;
         }
+        // 遍历classNames
         for (String className : classNames) {
             try {
-                //把类搞出来,反射来实例化(只有加@MyController需要实例化)
+                // 通过反射将带有@Controller注解的类实例化，并存入ioc容器中
                 Class<?> clazz = Class.forName(className);
                 if (clazz.isAnnotationPresent(Controller.class)) {
                     ioc.put(toLowerFirstWord(clazz.getSimpleName()), clazz.newInstance());
@@ -95,45 +113,49 @@ public class DispatcherServlet extends HttpServlet {
         }
     }
 
+    /**
+     * handleMapping初始化
+     */
     private void initHandleMapping() {
+        // ioc为空
         if (ioc.isEmpty()) {
             return;
         }
         try {
+            // 遍历ioc
             for (Map.Entry<String, Object> entry : ioc.entrySet()) {
                 Class<? extends Object> clazz = entry.getValue().getClass();
                 if (!clazz.isAnnotationPresent(Controller.class)) {
                     continue;
                 }
 
-                //拼url时,是controller头的url拼上方法上的url
+                // 确定url时，要controller头的url加上方法上的url
                 String baseUrl = "";
                 if (clazz.isAnnotationPresent(RequestMapping.class)) {
                     RequestMapping annotation = clazz.getAnnotation(RequestMapping.class);
                     baseUrl = annotation.value();
                 }
+                // getMethods：本类以及父类的所有public方法
+                // getDeclaredMethods：本类中的所有方法，
                 Method[] methods = clazz.getMethods();
+                // 遍历controller类的所有方法
                 for (Method method : methods) {
                     if (!method.isAnnotationPresent(RequestMapping.class)) {
                         continue;
                     }
                     RequestMapping annotation = method.getAnnotation(RequestMapping.class);
                     String url = annotation.value();
-
+                    // 确定url时，要controller头的加上方法上的
                     url = (baseUrl + "/" + url).replaceAll("/+", "/");
-                    //这里应该放置实例和method
+                    // 存放URL和对应的类和方法
                     handlerMapping.put(url, method);
                     controllerMap.put(url, clazz.newInstance());
-                    System.out.println(url + "," + method);
                 }
-
             }
-
         } catch (Exception e) {
             e.printStackTrace();
         }
     }
-
 
     @Override
     protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws ServletException, IOException {

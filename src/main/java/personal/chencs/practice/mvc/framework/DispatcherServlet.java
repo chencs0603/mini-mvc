@@ -2,6 +2,7 @@ package personal.chencs.practice.mvc.framework;
 
 import personal.chencs.practice.mvc.framework.annotation.Controller;
 import personal.chencs.practice.mvc.framework.annotation.RequestMapping;
+import personal.chencs.practice.mvc.framework.util.ClassNameUtils;
 
 import javax.servlet.ServletConfig;
 import javax.servlet.ServletException;
@@ -16,28 +17,39 @@ import java.net.URL;
 import java.util.*;
 
 public class DispatcherServlet extends HttpServlet {
-
+    // 存储配置文件的键值对
     private Properties properties = new Properties();
-
+    // 存储controller实例
     private Map<String, Object> ioc = new HashMap<>();
-
+    // 存储指定包名下的所有类，TODO:这个变量可以去掉
     private List<String> classNames = new ArrayList<>();
-
+    // 存储URL与方法的映射关系
     private Map<String, Method> handlerMapping = new HashMap<>();
-
+    // 存储URL与controller实例的映射关系
     private Map<String, Object> controllerMap = new HashMap<>();
+
+    // TODO:添加日志
 
     @Override
     public void init(ServletConfig config) throws ServletException {
-
+        // 加载配置文件
         loadConfigFile(config.getInitParameter("configLocation"));
-
+        // 描述指定包名下的所有类
         scanPackage(properties.getProperty("scanPackage"));
-
+        // 将带有Controller注解的类实例化
         newInstance();
-
+        // 找出URL对应的Controller类和方法名
         initHandleMapping();
+    }
 
+    @Override
+    protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws ServletException, IOException {
+        processRequest(req, resp);
+    }
+
+    @Override
+    protected void doPost(HttpServletRequest req, HttpServletResponse resp) throws ServletException, IOException {
+        processRequest(req, resp);
     }
 
     /**
@@ -54,7 +66,7 @@ public class DispatcherServlet extends HttpServlet {
         } catch (IOException e) {
             e.printStackTrace();
         } finally {
-            // 关流
+            // 关闭流
             if (null != inputStream) {
                 try {
                     inputStream.close();
@@ -71,7 +83,7 @@ public class DispatcherServlet extends HttpServlet {
      * @param packageName 包名
      */
     private void scanPackage(String packageName) {
-        // 把所有的.替换成/
+        // 把所有的.替换成/，TODO:正则表达式
         String packagePath = "/" + packageName.replaceAll("\\.", "/");
         URL url = this.getClass().getClassLoader().getResource(packagePath);
         // 遍历指定文件夹的所有文件
@@ -102,7 +114,7 @@ public class DispatcherServlet extends HttpServlet {
                 // 通过反射将带有@Controller注解的类实例化，并存入ioc容器中
                 Class<?> clazz = Class.forName(className);
                 if (clazz.isAnnotationPresent(Controller.class)) {
-                    ioc.put(toLowerFirstWord(clazz.getSimpleName()), clazz.newInstance());
+                    ioc.put(ClassNameUtils.defaultClassName(clazz.getSimpleName()), clazz.newInstance());
                 } else {
                     continue;
                 }
@@ -124,7 +136,7 @@ public class DispatcherServlet extends HttpServlet {
         try {
             // 遍历ioc
             for (Map.Entry<String, Object> entry : ioc.entrySet()) {
-                Class<? extends Object> clazz = entry.getValue().getClass();
+                Class<?> clazz = entry.getValue().getClass();
                 if (!clazz.isAnnotationPresent(Controller.class)) {
                     continue;
                 }
@@ -157,77 +169,59 @@ public class DispatcherServlet extends HttpServlet {
         }
     }
 
-    @Override
-    protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws ServletException, IOException {
-        dispather(req, resp);
-    }
-
-    @Override
-    protected void doPost(HttpServletRequest req, HttpServletResponse resp) throws ServletException, IOException {
-        dispather(req, resp);
-    }
-
-    private void dispather(HttpServletRequest req, HttpServletResponse resp) throws ServletException, IOException {
+    /**
+     * 处理请求
+     * @param req 请求
+     * @param resp 响应
+     * @throws ServletException
+     * @throws IOException
+     */
+    private void processRequest(HttpServletRequest req, HttpServletResponse resp) throws ServletException, IOException {
+        // 没有URL映射
         if (handlerMapping.isEmpty()) {
             return;
         }
-
+        // 获取请求的URL：去掉URL中的contextpath,并去掉多余的/
         String url = req.getRequestURI();
         String contextPath = req.getContextPath();
-
-        //拼接url并把多个/替换成一个
         url = url.replace(contextPath, "").replaceAll("/+", "/");
-
+        // 没找到URL对应的处理方法
         if (!this.handlerMapping.containsKey(url)) {
             resp.getWriter().write("404 NOT FOUND!");
             return;
         }
 
         Method method = this.handlerMapping.get(url);
-
-        //获取方法的参数列表
-        Class<?>[] parameterTypes = method.getParameterTypes();
-
-        //获取请求的参数
-        Map<String, String[]> parameterMap = req.getParameterMap();
-
-        //保存参数值
-        Object[] paramValues = new Object[parameterTypes.length];
-
-        //方法的参数列表
-        for (int i = 0; i < parameterTypes.length; i++) {
-            //根据参数名称，做某些处理
-            String requestParam = parameterTypes[i].getSimpleName();
-
-
-            if (requestParam.equals("HttpServletRequest")) {
-                //参数类型已明确，这边强转类型
+        // 将请求中的参数映射到方法中的参数
+        Map<String, String[]> paramMap = req.getParameterMap();
+        Class<?>[] paramTypes = method.getParameterTypes();
+        Object[] paramValues = new Object[paramTypes.length];
+        for (int i = 0; i < paramTypes.length; i++) {
+            // 请求和响应参数直接赋值
+            String parameterTypeName = paramTypes[i].getSimpleName();
+            if (parameterTypeName.equals("HttpServletRequest")) {
                 paramValues[i] = req;
                 continue;
             }
-            if (requestParam.equals("HttpServletResponse")) {
+            if (parameterTypeName.equals("HttpServletResponse")) {
                 paramValues[i] = resp;
                 continue;
             }
-            if (requestParam.equals("String")) {
-                for (Map.Entry<String, String[]> param : parameterMap.entrySet()) {
-                    String value = Arrays.toString(param.getValue()).replaceAll("\\[|\\]", "").replaceAll(",\\s", ",");
+            // TODO：目前只考虑String类型的参数转换，还应考虑bean对象的参数映射
+            if (parameterTypeName.equals("String")) {
+                for (Map.Entry<String, String[]> param : paramMap.entrySet()) {
+                    // 先去掉[],然后在将，换成and
+                    String value = Arrays.toString(param.getValue()).replaceAll("\\[|\\]", "").replaceAll(",\\s", " and ");
                     paramValues[i] = value;
                 }
             }
         }
-        //利用反射机制来调用
+        // 通过反射调用对应controller实例的对应方法
         try {
-            method.invoke(this.controllerMap.get(url), paramValues);//obj是method所对应的实例 在ioc容器中
+            method.invoke(this.controllerMap.get(url), paramValues);
         } catch (Exception e) {
             e.printStackTrace();
         }
-    }
-
-    private String toLowerFirstWord(String name) {
-        char[] charArray = name.toCharArray();
-        charArray[0] += 32;
-        return String.valueOf(charArray);
     }
 
 }
